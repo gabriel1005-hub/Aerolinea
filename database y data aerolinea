@@ -1,0 +1,1206 @@
+"""Generador V3 base."""
+
+# ===============================================
+# PROYECTO INTEGRADOR
+# AEROLÍNEA BI
+# GENERACIÓN DE DATOS
+# Databricks - Delta Lake
+# ===============================================
+
+%pip install faker
+
+%restart_python
+
+# ===============================================
+# IMPORTS
+# ===============================================
+
+from faker import Faker
+
+import pandas as pd
+import random
+import numpy as np
+
+from datetime import datetime
+from datetime import timedelta
+from datetime import date
+
+# ===============================================
+# CONFIGURACIÓN
+# ===============================================
+
+fake = Faker("es_CO")
+
+random.seed(42)
+np.random.seed(42)
+
+# ===============================================
+# PARÁMETROS DEL PROYECTO
+# ===============================================
+
+DATABASE_NAME = "aerolinea_bi"
+
+N_PASAJEROS = 3000
+
+ANIOS = 3
+
+VUELOS_DIARIOS = 5
+
+RUTAS = 14
+
+AERONAVES = 3
+
+# ===============================================
+# CREAR BASE DE DATOS
+# ===============================================
+
+spark.sql(f"""
+CREATE DATABASE IF NOT EXISTS {DATABASE_NAME}
+""")
+
+spark.sql(f"""
+USE {DATABASE_NAME}
+""")
+
+# ===============================================
+# ELIMINAR TABLAS
+# ===============================================
+
+tablas = [
+
+    "fact_reservas",
+
+    "dim_vuelo",
+
+    "dim_tiempo",
+
+    "dim_aeronave",
+
+    "dim_ruta",
+
+    "dim_tarifa",
+
+    "dim_pasajero"
+
+]
+
+for tabla in tablas:
+
+    spark.sql(f"""
+
+    DROP TABLE IF EXISTS {DATABASE_NAME}.{tabla}
+
+    """)
+
+print("Base de datos preparada correctamente.")
+
+# ===============================================
+# RUTAS
+# ===============================================
+
+rutas = [
+
+("Bogotá","Medellín",True),
+
+("Bogotá","Cali",True),
+
+("Bogotá","Cartagena",True),
+
+("Bogotá","Barranquilla",True),
+
+("Bogotá","Santa Marta",True),
+
+("Medellín","Cartagena",True),
+
+("Medellín","Cali",True),
+
+("Cali","Cartagena",False),
+
+("Cali","Barranquilla",False),
+
+("Cartagena","Santa Marta",False),
+
+("Pereira","Bogotá",False),
+
+("Bucaramanga","Bogotá",False),
+
+("Cúcuta","Bogotá",False),
+
+("Montería","Bogotá",False)
+
+]
+
+df_rutas = pd.DataFrame(
+
+    rutas,
+
+    columns=[
+
+        "origen",
+
+        "destino",
+
+        "alta_demanda"
+
+    ]
+
+)
+
+df_rutas.insert(
+
+    0,
+
+    "id_ruta",
+
+    range(1, len(df_rutas) + 1)
+
+)
+
+
+df_rutas["ruta"] = (
+    df_rutas["origen"] +
+    " → " +
+    df_rutas["destino"]
+)
+
+# ===============================================
+# TARIFAS
+# ===============================================
+
+df_tarifas = pd.DataFrame({
+
+"id_tarifa":[1,2,3],
+
+"tipo":[
+
+"Económica",
+
+"Premium",
+
+"Ejecutiva"
+
+]
+
+})
+
+# ===============================================
+# AERONAVES
+# ===============================================
+
+df_aeronaves = pd.DataFrame({
+
+"id_aeronave":[1,2,3],
+
+"modelo":[
+
+"Airbus A320",
+
+"Boeing 737-800",
+
+"Airbus A321"
+
+],
+
+"capacidad":[
+
+180,
+
+160,
+
+220
+
+],
+
+"consumo_combustible_hora":[
+
+2500,
+
+2350,
+
+2850
+
+],
+
+"costo_retraso_minuto":[
+
+55,
+
+45,
+
+75
+
+]
+
+})
+
+# ===============================================
+# PASAJEROS
+# ===============================================
+
+pasajeros=[]
+
+for i in range(1,N_PASAJEROS+1):
+
+    pasajeros.append({
+
+        "id_pasajero":i,
+
+        "nombre":fake.name(),
+
+        "correo":fake.unique.email(),
+
+        "telefono":fake.phone_number()
+
+    })
+
+df_pasajeros=pd.DataFrame(pasajeros)
+
+print(df_pasajeros.head())
+# ===============================================
+# DIM_TIEMPO
+# ===============================================
+
+fecha_inicio = date(
+    datetime.today().year - ANIOS,
+    1,
+    1
+)
+
+fecha_fin = date(
+    datetime.today().year - 1,
+    12,
+    31
+)
+
+fechas = []
+
+fecha_actual = fecha_inicio
+
+while fecha_actual <= fecha_fin:
+
+    fechas.append({
+
+        "id_fecha": fecha_actual,
+
+        "anio": fecha_actual.year,
+
+        "mes": fecha_actual.month,
+
+        "nombre_mes": fecha_actual.strftime("%B"),
+
+        "trimestre": f"T{((fecha_actual.month-1)//3)+1}",
+
+        "dia_semana": fecha_actual.strftime("%A"),
+
+        "fin_semana":
+            fecha_actual.weekday() >= 5
+
+    })
+
+    fecha_actual += timedelta(days=1)
+
+df_tiempo = pd.DataFrame(fechas)
+
+print(df_tiempo.head())
+
+# ===============================================
+# REGLAS DE NEGOCIO V3
+# ===============================================
+
+# Cada ruta tendrá un comportamiento propio.
+# Esto hará que el dashboard cuente una historia
+# coherente de negocio.
+
+perfil_rutas = {
+
+    1: {
+        "nombre":"Bogotá → Medellín",
+        "perfil":"PREMIUM",
+        "aeronave":3,
+        "load":(96,99),
+        "retraso":(35,85),
+        "estado":[50,40,10]
+    },
+
+    2:{
+        "nombre":"Bogotá → Cali",
+        "perfil":"PREMIUM",
+        "aeronave":3,
+        "load":(90,97),
+        "retraso":(30,75),
+        "estado":[50,40,10]
+    },
+
+    3:{
+        "nombre":"Bogotá → Cartagena",
+        "perfil":"ALTA",
+        "aeronave":1,
+        "load":(88,95),
+        "retraso":(18,45),
+        "estado":[70,23,7]
+    },
+
+    4:{
+        "nombre":"Bogotá → Barranquilla",
+        "perfil":"ALTA",
+        "aeronave":1,
+        "load":(87,94),
+        "retraso":(18,40),
+        "estado":[70,23,7]
+    },
+
+    5:{
+        "nombre":"Bogotá → Santa Marta",
+        "perfil":"ALTA",
+        "aeronave":1,
+        "load":(88,94),
+        "retraso":(15,38),
+        "estado":[70,23,7]
+    },
+
+    6:{
+        "nombre":"Medellín → Cartagena",
+        "perfil":"MEDIA",
+        "aeronave":1,
+        "load":(84,91),
+        "retraso":(8,22),
+        "estado":[82,15,4]
+    },
+
+    7:{
+        "nombre":"Medellín → Cali",
+        "perfil":"MEDIA",
+        "aeronave":1,
+        "load":(82,89),
+        "retraso":(6,18),
+        "estado":[85,13,4]
+    },
+
+    8:{
+        "nombre":"Cali → Cartagena",
+        "perfil":"REGIONAL",
+        "aeronave":2,
+        "load":(74,83),
+        "retraso":(0,10),
+        "estado":[93,6,1]
+    },
+
+    9:{
+        "nombre":"Cali → Barranquilla",
+        "perfil":"REGIONAL",
+        "aeronave":2,
+        "load":(73,82),
+        "retraso":(0,8),
+        "estado":[94,5,1]
+    },
+
+    10:{
+        "nombre":"Cartagena → Santa Marta",
+        "perfil":"REGIONAL",
+        "aeronave":2,
+        "load":(75,84),
+        "retraso":(0,8),
+        "estado":[95,4,1]
+    },
+
+    11:{
+        "nombre":"Pereira → Bogotá",
+        "perfil":"REGIONAL",
+        "aeronave":2,
+        "load":(72,81),
+        "retraso":(0,6),
+        "estado":[96,3,1]
+    },
+
+    12:{
+        "nombre":"Bucaramanga → Bogotá",
+        "perfil":"REGIONAL",
+        "aeronave":2,
+        "load":(72,82),
+        "retraso":(0,7),
+        "estado":[95,4,1]
+    },
+
+    13:{
+        "nombre":"Cúcuta → Bogotá",
+        "perfil":"REGIONAL",
+        "aeronave":2,
+        "load":(71,80),
+        "retraso":(0,6),
+        "estado":[96,3,1]
+    },
+
+    14:{
+        "nombre":"Montería → Bogotá",
+        "perfil":"REGIONAL",
+        "aeronave":2,
+        "load":(70,80),
+        "retraso":(0,5),
+        "estado":[97,2,1]
+    }
+
+}
+# ===============================================
+# PESOS DE RUTAS
+# ===============================================
+
+pesos_rutas = []
+
+for id_ruta in df_rutas["id_ruta"]:
+
+    if id_ruta == 1:
+
+        pesos_rutas.append(32)
+
+    elif id_ruta == 2:
+
+        pesos_rutas.append(18)
+
+    elif id_ruta == 3:
+
+        pesos_rutas.append(10)
+
+    elif id_ruta == 4:
+
+        pesos_rutas.append(8)
+
+    elif id_ruta == 5:
+
+        pesos_rutas.append(7)
+
+    elif id_ruta == 6:
+
+        pesos_rutas.append(5)
+
+    elif id_ruta == 7:
+
+        pesos_rutas.append(4)
+
+    else:
+
+        pesos_rutas.append(1)
+# ===============================================
+# TEMPORADAS
+# ===============================================
+
+def obtener_factor_demanda(fecha):
+
+    calendario = {
+
+        1: 1.15,   # Vacaciones
+        2: 0.72,   # Temporada baja
+        3: 1.05,
+        4: 1.25,   # Semana Santa
+        5: 0.95,
+        6: 1.35,   # Vacaciones
+        7: 1.45,
+        8: 1.10,
+        9: 0.82,
+        10: 0.75,
+        11: 1.00,
+        12: 1.55   # Navidad
+    }
+
+    return calendario[fecha.month]
+
+# ===============================================
+# ESTADO DEL VUELO
+# ===============================================
+
+def generar_estado(perfil):
+
+    return random.choices(
+
+        [
+
+            "A Tiempo",
+
+            "Retrasado",
+
+            "Cancelado"
+
+        ],
+
+        weights=perfil["estado"]
+
+    )[0]
+
+# ===============================================
+# MINUTOS DE RETRASO
+# ===============================================
+
+def generar_retraso(estado,perfil):
+
+    if estado=="A Tiempo":
+
+        return 0
+
+    if estado=="Cancelado":
+
+        return random.randint(60,180)
+
+    return random.randint(
+
+        perfil["retraso"][0],
+
+        perfil["retraso"][1]
+
+    )
+
+# ===============================================
+# REGENERAR VUELOS V3
+# ===============================================
+
+vuelos = []
+
+id_vuelo = 1
+
+for _, fila_fecha in df_tiempo.iterrows():
+
+    fecha = fila_fecha["id_fecha"]
+
+    temporada = obtener_factor_demanda(fecha)
+    
+    dia = fecha.weekday()
+
+    factor_dia = 1
+    if dia == 4:      # Viernes
+
+        factor_dia = 1.08
+
+    elif dia == 6:    # Domingo
+
+        factor_dia = 1.12
+
+    elif dia == 0:    # Lunes
+
+        factor_dia = 0.95
+    vuelos_hoy = max(
+        3,
+        int(VUELOS_DIARIOS * temporada)
+    )
+
+    for _ in range(vuelos_hoy):
+
+        # -------------------------------------
+        # Seleccionar ruta
+        # -------------------------------------
+
+        ruta = df_rutas.sample(
+            weights=pesos_rutas
+        ).iloc[0]
+
+        perfil = perfil_rutas[ruta["id_ruta"]]
+
+        # -------------------------------------
+        # Aeronave asignada por ruta
+        # -------------------------------------
+
+        aeronave = df_aeronaves.loc[
+            df_aeronaves["id_aeronave"] ==
+            perfil["aeronave"]
+        ].iloc[0]
+
+        # -------------------------------------
+        # Hora salida
+        # -------------------------------------
+
+        hora = random.randint(5,22)
+
+        minuto = random.choice(
+            [0,15,30,45]
+        )
+
+        # -------------------------------------
+        # Estado
+        # -------------------------------------
+
+        estado = generar_estado(perfil)
+
+        retraso = generar_retraso(
+            estado,
+            perfil
+        )
+        if fecha.month in [6,7,12]:
+
+            retraso = int(retraso * 1.25)
+
+        elif fecha.month in [2,10]:
+
+            retraso = int(retraso * 0.75)
+        # -------------------------------------
+        # Load Factor
+        # -------------------------------------
+
+        base = random.randint(
+            perfil["load"][0],
+            perfil["load"][1]
+        )
+
+        ocupacion = int(
+            base *
+            temporada *
+            factor_dia
+        )
+
+        if fecha.month in [6,7,12]:
+            ocupacion += random.randint(2,6)
+        elif fecha.month in [2,10]:
+            ocupacion -= random.randint(4,8)
+
+        ocupacion = max(55, min(99, ocupacion))
+
+        vendidos = int(
+            aeronave["capacidad"] *
+            ocupacion / 100
+        )
+
+        # -------------------------------------
+        # Construcción registro
+        # -------------------------------------
+
+        vuelos.append({
+
+            "id_vuelo":
+
+                id_vuelo,
+
+            "id_ruta":
+
+                ruta["id_ruta"],
+
+            "id_aeronave":
+
+                aeronave["id_aeronave"],
+
+            "fecha_hora_salida":
+
+                datetime(
+
+                    fecha.year,
+
+                    fecha.month,
+
+                    fecha.day,
+
+                    hora,
+
+                    minuto
+
+                ),
+
+            "estado_vuelo":
+
+                estado,
+
+            "minutos_retraso":
+
+                retraso,
+
+            "capacidad":
+
+                aeronave["capacidad"],
+
+            "asientos_vendidos":
+
+                vendidos,
+
+            "load_factor":
+
+                ocupacion,
+
+            "costo_minuto":
+
+                aeronave["costo_retraso_minuto"]
+
+        })
+
+        id_vuelo += 1
+
+df_vuelos = pd.DataFrame(vuelos)
+
+print(df_vuelos.head())
+
+print()
+
+print("Total vuelos:", len(df_vuelos))
+# ===============================================
+# PASAJEROS FRECUENTES
+# ===============================================
+
+todos_pasajeros = df_pasajeros["id_pasajero"].tolist()
+
+# 20% serán viajeros frecuentes
+cantidad_frecuentes = int(len(todos_pasajeros) * 0.20)
+
+pasajeros_frecuentes = random.sample(
+    todos_pasajeros,
+    cantidad_frecuentes
+)
+
+pasajeros_normales = list(
+    set(todos_pasajeros) -
+    set(pasajeros_frecuentes)
+)
+# ===============================================
+# GENERAR FACT RESERVAS V3
+# ===============================================
+
+fact = []
+
+id_reserva = 1
+
+for _, vuelo in df_vuelos.iterrows():
+
+    perfil = perfil_rutas[vuelo["id_ruta"]]
+
+    if perfil["perfil"]=="PREMIUM":
+
+        eco=(180,260)
+        premium=(350,500)
+        business=(700,950)
+
+    elif perfil["perfil"]=="ALTA":
+
+        eco=(160,230)
+        premium=(310,430)
+        business=(620,850)
+
+    elif perfil["perfil"]=="MEDIA":
+
+        eco=(130,190)
+        premium=(250,360)
+        business=(500,700)
+
+    else:
+
+        eco=(95,145)
+        premium=(180,260)
+        business=(360,520)
+
+    # ==========================================
+    # DISTRIBUCIÓN DE TARIFAS
+    # ==========================================
+
+    if perfil["perfil"]=="PREMIUM":
+
+        pesos=[72,20,8]
+
+    elif perfil["perfil"]=="ALTA":
+
+        pesos=[80,15,5]
+
+    elif perfil["perfil"]=="MEDIA":
+
+        pesos=[89,8,3]
+
+    else:
+
+        pesos=[95,4,1]
+
+    # ==========================================
+    # COSTO TOTAL DEL VUELO
+    # ==========================================
+
+    if perfil["perfil"] == "PREMIUM":
+
+        factor_congestion = 2.2
+        costo_fijo = 1200
+
+    elif perfil["perfil"] == "ALTA":
+
+        factor_congestion = 1.8
+        costo_fijo = 900
+
+    elif perfil["perfil"] == "MEDIA":
+
+        factor_congestion = 1.3
+        costo_fijo = 600
+
+    else:
+
+        factor_congestion = 0.9
+        costo_fijo = 250
+    
+    aeronave = df_aeronaves.loc[
+        df_aeronaves["id_aeronave"] ==
+        vuelo["id_aeronave"]
+    ].iloc[0]
+    costo_total_vuelo = (
+
+        costo_fijo +
+
+        (
+
+            vuelo["minutos_retraso"] *
+
+            vuelo["costo_minuto"] *
+
+            factor_congestion 
+
+        ) +
+
+        (
+
+            aeronave["consumo_combustible_hora"] / 70
+
+        )
+
+    )
+
+    if vuelo["estado_vuelo"] == "Cancelado":
+
+        costo_total_vuelo += vuelo["asientos_vendidos"] * 120
+        costo_total_vuelo *= 2
+        
+
+    elif vuelo["estado_vuelo"] == "Retrasado":
+
+        costo_total_vuelo *= 1.75
+
+    costo_por_reserva = round(
+
+        costo_total_vuelo /
+
+        (vuelo["asientos_vendidos"] * 0.80),
+
+        2
+
+    )
+
+    # ==========================================
+    # RESERVAS
+    # ==========================================
+
+    for _ in range(vuelo["asientos_vendidos"]):
+
+        pasajero = random.choices(
+
+            pasajeros_frecuentes +
+
+            pasajeros_normales,
+
+            weights=
+
+            [5]*len(pasajeros_frecuentes)
+
+            +
+
+            [1]*len(pasajeros_normales)
+
+        )[0]
+
+        tarifa = random.choices(
+
+            [1,2,3],
+
+            weights=pesos
+
+        )[0]
+
+        # ======================================
+        # PRECIO VARIABLE
+        # ======================================
+
+        if tarifa==1:
+
+            precio=random.randint(*eco)
+
+        elif tarifa==2:
+
+            precio=random.randint(*premium)
+
+        else:
+
+            precio=random.randint(*business)
+        
+        if vuelo["load_factor"] >= 95:
+
+            precio *= 1.20
+
+        elif vuelo["load_factor"] >= 90:
+
+            precio *= 1.10
+
+        mes = vuelo["fecha_hora_salida"].month
+
+        if mes in [6,7,12]:
+
+            precio *= 1.12
+
+        elif mes in [2,10]:
+
+            precio *= 0.80
+
+        precio = round(precio)
+        # ======================================
+        # ESTADO RESERVA
+        # ======================================
+
+        if vuelo["estado_vuelo"]=="Cancelado":
+
+            estado="Cancelada"
+
+        elif vuelo["estado_vuelo"]=="Retrasado":
+
+            estado=random.choice([
+
+                "Check-In",
+
+                "Completada"
+
+            ])
+
+        else:
+
+            estado=random.choice([
+
+                "Confirmada",
+
+                "Completada",
+
+                "Check-In"
+
+            ])
+
+        # ======================================
+        # INGRESOS
+        # ======================================
+
+        ingreso = precio
+
+        # ======================================
+        # COSTO INEFICIENCIA
+        # ======================================
+
+        costo = costo_por_reserva
+
+        # ======================================
+        # MARGEN
+        # ======================================
+
+        margen = round(
+
+            ingreso -
+
+            costo,
+
+            2
+
+        )
+
+        fact.append({
+
+            "id_reserva":
+
+                id_reserva,
+
+            "id_pasajero":
+
+                pasajero,
+
+            "id_tarifa":
+
+                tarifa,
+
+            "id_vuelo":
+
+                vuelo["id_vuelo"],
+
+            "id_ruta":
+
+                vuelo["id_ruta"],
+
+            "id_aeronave":
+
+                vuelo["id_aeronave"],
+
+            "id_fecha":
+
+                vuelo["fecha_hora_salida"].date(),
+
+            "precio_pagado":
+
+                precio,
+
+            "estado_reserva":
+
+                estado,
+
+            "asientos_ofertados":
+
+                vuelo["capacidad"],
+
+            "asientos_vendidos":
+
+                vuelo["asientos_vendidos"],
+
+            "load_factor":
+
+                vuelo["load_factor"],
+
+            "minutos_retraso":
+
+                vuelo["minutos_retraso"],
+
+            "costo_ineficiencia":
+
+                costo,
+
+            "ingresos_brutos":
+
+                ingreso,
+
+            "margen_operativo":
+
+                margen
+
+        })
+
+        id_reserva += 1
+
+df_fact = pd.DataFrame(fact)
+
+print(df_fact.head())
+
+print()
+
+print(f"Reservas generadas: {len(df_fact):,}")
+
+print()
+
+print("========== VALIDACIÓN ==========")
+
+print(f"Pasajeros : {df_pasajeros.shape[0]:,}")
+
+print(f"Rutas     : {df_rutas.shape[0]:,}")
+
+print(f"Tarifas   : {df_tarifas.shape[0]:,}")
+
+print(f"Aeronaves : {df_aeronaves.shape[0]:,}")
+
+print(f"Tiempo    : {df_tiempo.shape[0]:,}")
+
+print(f"Vuelos    : {df_vuelos.shape[0]:,}")
+
+print(f"Reservas  : {df_fact.shape[0]:,}")
+
+print("================================")
+# ===============================================
+# CONVERTIR A SPARK
+# ===============================================
+
+spark_pasajeros = spark.createDataFrame(df_pasajeros)
+
+spark_tarifas = spark.createDataFrame(df_tarifas)
+
+spark_rutas = spark.createDataFrame(df_rutas)
+
+spark_aeronaves = spark.createDataFrame(df_aeronaves)
+
+spark_tiempo = spark.createDataFrame(df_tiempo)
+
+spark_vuelos = spark.createDataFrame(df_vuelos)
+
+spark_fact = spark.createDataFrame(df_fact)
+
+# ===============================================
+# ESCRIBIR DELTA
+# ===============================================
+
+spark_pasajeros.write \
+.format("delta") \
+.mode("overwrite") \
+.saveAsTable(f"{DATABASE_NAME}.dim_pasajero")
+
+spark_tarifas.write \
+.format("delta") \
+.mode("overwrite") \
+.saveAsTable(f"{DATABASE_NAME}.dim_tarifa")
+
+spark_rutas.write \
+.format("delta") \
+.mode("overwrite") \
+.saveAsTable(f"{DATABASE_NAME}.dim_ruta")
+
+spark_aeronaves.write \
+.format("delta") \
+.mode("overwrite") \
+.saveAsTable(f"{DATABASE_NAME}.dim_aeronave")
+
+spark_tiempo.write \
+.format("delta") \
+.mode("overwrite") \
+.saveAsTable(f"{DATABASE_NAME}.dim_tiempo")
+
+spark_vuelos.write \
+.format("delta") \
+.mode("overwrite") \
+.saveAsTable(f"{DATABASE_NAME}.dim_vuelo")
+
+spark_fact.write \
+.format("delta") \
+.mode("overwrite") \
+.saveAsTable(f"{DATABASE_NAME}.fact_reservas")
+print("="*50)
+
+print("PASAJEROS :",spark.table(f"{DATABASE_NAME}.dim_pasajero").count())
+
+print("TARIFAS :",spark.table(f"{DATABASE_NAME}.dim_tarifa").count())
+
+print("RUTAS :",spark.table(f"{DATABASE_NAME}.dim_ruta").count())
+
+print("AERONAVES :",spark.table(f"{DATABASE_NAME}.dim_aeronave").count())
+
+print("TIEMPO :",spark.table(f"{DATABASE_NAME}.dim_tiempo").count())
+
+print("VUELOS :",spark.table(f"{DATABASE_NAME}.dim_vuelo").count())
+
+print("RESERVAS :",spark.table(f"{DATABASE_NAME}.fact_reservas").count())
+
+print("="*50)
+print()
+
+print("VALIDANDO COLUMNAS NUEVAS")
+
+print()
+
+spark.table(
+    f"{DATABASE_NAME}.fact_reservas"
+).select(
+
+    "id_vuelo",
+
+    "id_ruta",
+
+    "id_aeronave"
+
+).show(5)
+
+print()
+
+print("="*50)
+
+print("="*80)
+
+print("RESUMEN POR RUTA")
+
+print(
+
+df_fact.groupby("id_ruta").agg({
+
+"ingresos_brutos":"sum",
+
+"costo_ineficiencia":"sum",
+
+"margen_operativo":"sum",
+
+"minutos_retraso":"mean",
+
+"load_factor":"mean"
+
+}).round(2)
+
+)
+
+print("="*80)
